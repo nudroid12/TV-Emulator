@@ -1,0 +1,4 @@
+<resources>
+    <string name="tv_remote_name">TV Emulator Remote</string>
+    <string name="tv_remote_description">Shows a floating remote for the app selected in TV Emulator. Reads its controls for directional navigation and OK.</string>
+</resources>

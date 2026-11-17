@@ -10,6 +10,8 @@ import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
+import android.provider.Settings;
+import android.widget.Button;
 import android.view.Gravity;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -27,6 +29,8 @@ public final class MainActivity extends Activity {
     private static final int BACKGROUND = 0xff101624;
     private static final int SURFACE = 0xff1a253a;
     private static final int MUTED = 0xffa9b7ce;
+    private Button remoteSetup;
+
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
         LinearLayout root = new LinearLayout(this);
@@ -37,8 +41,23 @@ public final class MainActivity extends Activity {
         showLibrary(root);
     }
 
+    @Override protected void onResume() {
+        super.onResume();
+        TvRemoteService.arm(null);
+        if (remoteSetup != null) {
+            remoteSetup.setVisibility(TvRemoteService.isReady() ? android.view.View.GONE : android.view.View.VISIBLE);
+        }
+    }
+
     private void showLibrary(LinearLayout root) {
         root.addView(text("TV Emulator", 24, Color.WHITE, true));
+        Button enable = new Button(this);
+        enable.setAllCaps(false);
+        enable.setText("Enable floating remote");
+        enable.setOnClickListener(view ->
+                startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
+        root.addView(enable, new LinearLayout.LayoutParams(-2, -2));
+        remoteSetup = enable;
         TextView title = text("Installed apps", 15, MUTED, true);
         title.setPadding(0, dp(20), 0, dp(8));
         root.addView(title);
@@ -113,9 +132,11 @@ public final class MainActivity extends Activity {
         }
         if (launch != null) {
             try {
+                TvRemoteService.arm(packageName);
                 startActivity(launch);
                 return;
             } catch (ActivityNotFoundException | SecurityException ignored) {
+                TvRemoteService.arm(null);
                 // The entry may have been removed or restricted since the list was loaded.
             }
         }
