@@ -1,21 +1,23 @@
 name: Apply TV Emulator ZIP
 
 on:
-  workflow_call:
-    outputs:
-      source_sha:
-        description: Branch commit after applying patches
-        value: ${{ jobs.apply.outputs.source_sha }}
+  push:
+    branches: [main]
+    paths:
+      - '*.[zZ][iI][pP]'
+  workflow_dispatch:
+
+concurrency:
+  group: tv-emulator-apply-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: write
 
 jobs:
   apply:
-    if: github.ref_type == 'branch'
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    outputs:
-      source_sha: ${{ steps.result.outputs.sha }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -90,7 +92,13 @@ jobs:
               -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
               commit -m 'Apply ZIP patches'
           git push origin "HEAD:$GITHUB_REF"
-      - name: Record source commit
-        id: result
+      - name: Record applied commit
         shell: bash
-        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+        run: git rev-parse HEAD > "$RUNNER_TEMP/applied-commit.txt"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tv-emulator-applied-commit
+          path: ${{ runner.temp }}/applied-commit.txt
+          if-no-files-found: error
+          retention-days: 7

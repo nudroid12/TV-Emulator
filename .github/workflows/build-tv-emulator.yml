@@ -1,34 +1,51 @@
-name: Apply and build TV Emulator APK
+name: Build TV Emulator APK
 
 on:
-  push:
-    branches: ['**']
-    paths:
-      - '*.[zZ][iI][pP]'
+  workflow_run:
+    workflows: ['Apply TV Emulator ZIP']
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
-
-concurrency:
-  group: tv-emulator-pipeline-${{ github.ref }}
-  cancel-in-progress: false
+  actions: read
 
 jobs:
-  apply:
-    permissions:
-      contents: write
-    uses: ./.github/workflows/apply-tv-emulator.yml
-
   build:
-    needs: apply
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
+      - uses: actions/download-artifact@v4
+        if: github.event_name == 'workflow_run'
+        with:
+          name: tv-emulator-applied-commit
+          path: ${{ runner.temp }}/apply-result
+          github-token: ${{ github.token }}
+          run-id: ${{ github.event.workflow_run.id }}
+
+      - name: Read applied commit
+        if: github.event_name == 'workflow_run'
+        id: applied
+        shell: bash
+        run: |
+          sha="$(cat "$RUNNER_TEMP/apply-result/applied-commit.txt")"
+          if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo '::error::Apply returned an invalid commit SHA.'
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
-          ref: ${{ needs.apply.outputs.source_sha }}
+          ref: ${{ steps.applied.outputs.sha || github.sha }}
 
       - uses: actions/setup-java@v5
         with:
@@ -38,6 +55,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: '8.9'
+          cache-read-only: true
 
       - name: Ensure Android SDK packages are available
         shell: bash
