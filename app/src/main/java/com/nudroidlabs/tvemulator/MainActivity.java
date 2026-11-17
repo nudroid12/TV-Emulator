@@ -1,15 +1,24 @@
 package com.nudroidlabs.tvemulator;
 
 import android.app.Activity;
+import android.app.ActivityManager;
+import android.app.ActivityOptions;
 import android.content.ComponentName;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.graphics.Color;
+import android.graphics.SurfaceTexture;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.hardware.display.DisplayManager;
+import android.hardware.display.VirtualDisplay;
+import android.os.Build;
 import android.os.Bundle;
+import android.view.KeyEvent;
+import android.view.Surface;
+import android.view.TextureView;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -19,6 +28,8 @@ import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
+
+import com.nudroidlabs.tvadapter.TvAdapter;
 
 import java.text.Collator;
 import java.util.ArrayList;
@@ -30,7 +41,13 @@ public final class MainActivity extends Activity {
     private static final int BACKGROUND = 0xff101624;
     private static final int SURFACE = 0xff1a253a;
     private static final int MUTED = 0xffa9b7ce;
+    private static final int TV_WIDTH = 960;
+    private static final int TV_HEIGHT = 540;
+    private static final int TV_DENSITY = 160;
+
     private ComponentName selection;
+    private VirtualDisplay display;
+    private Surface displaySurface;
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
@@ -50,8 +67,25 @@ public final class MainActivity extends Activity {
             super.onBackPressed();
             return;
         }
+        closeDisplay();
         selection = null;
         render();
+    }
+
+    @Override protected void onDestroy() {
+        closeDisplay();
+        super.onDestroy();
+    }
+
+    private void closeDisplay() {
+        if (display != null) {
+            display.release();
+            display = null;
+        }
+        if (displaySurface != null) {
+            displaySurface.release();
+            displaySurface = null;
+        }
     }
 
     private void render() {
@@ -156,41 +190,82 @@ public final class MainActivity extends Activity {
             return;
         }
 
-        FrameLayout preview = new FrameLayout(this) {
-            @Override protected void onMeasure(int widthSpec, int heightSpec) {
-                int availableWidth = MeasureSpec.getSize(widthSpec);
-                int availableHeight = MeasureSpec.getSize(heightSpec);
-                int width = Math.min(availableWidth, availableHeight * 16 / 9);
-                int height = width * 9 / 16;
-                super.onMeasure(MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
-                        MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY));
-            }
-        };
-        preview.setBackground(background(0xff090d15, 12));
-        TextView status = text("Android TV runtime is not available in this build.", 15, MUTED, false);
+        FrameLayout screen = new FrameLayout(this);
+        screen.setBackgroundColor(0xff090d15);
+        TextureView texture = new TextureView(this);
+        screen.addView(texture, new FrameLayout.LayoutParams(-1, -1));
+        TextView status = text("Opening app on the TV display…", 24, MUTED, false);
         status.setGravity(Gravity.CENTER);
-        status.setPadding(dp(12), dp(4), dp(12), dp(4));
-        preview.addView(status, new FrameLayout.LayoutParams(-1, -1));
-        FrameLayout viewport = new FrameLayout(this);
-        viewport.addView(preview, new FrameLayout.LayoutParams(-1, -1, Gravity.CENTER));
-        LinearLayout.LayoutParams previewParams = new LinearLayout.LayoutParams(-1, 0, 1f);
-        previewParams.topMargin = dp(10);
-        root.addView(viewport, previewParams);
+        status.setPadding(24, 12, 24, 12);
+        screen.addView(status, new FrameLayout.LayoutParams(-1, -1));
 
-        LinearLayout remote = new LinearLayout(this);
-        remote.setGravity(Gravity.CENTER);
-        remote.setPadding(0, dp(8), 0, 0);
-        for (String label : new String[] {"←", "↑", "↓", "→", "OK", "Back"}) {
-            Button control = new Button(this);
-            control.setText(label);
-            control.setAllCaps(false);
-            control.setMinWidth(0);
-            control.setMinimumWidth(0);
-            control.setPadding(0, 0, 0, 0);
-            control.setEnabled(false);
-            remote.addView(control, new LinearLayout.LayoutParams(0, dp(44), 1f));
+        ComponentName target = selection;
+        texture.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
+            @Override public void onSurfaceTextureAvailable(SurfaceTexture surface, int width, int height) {
+                if (target.equals(selection)) openDisplay(surface, target, status);
+            }
+
+            @Override public void onSurfaceTextureSizeChanged(SurfaceTexture surface, int width, int height) {}
+
+            @Override public boolean onSurfaceTextureDestroyed(SurfaceTexture surface) {
+                closeDisplay();
+                return true;
+            }
+
+            @Override public void onSurfaceTextureUpdated(SurfaceTexture surface) {}
+        });
+
+        Runnable hideStatus = () -> status.setVisibility(View.GONE);
+        TvAdapter adapter = new TvAdapter(this, screen, TV_WIDTH, TV_HEIGHT, keyCode -> {
+            if (keyCode == KeyEvent.KEYCODE_BACK) {
+                onBackPressed();
+                return;
+            }
+            if (display != null) {
+                status.setText("Remote input to another app is unavailable in this build.");
+                status.setVisibility(View.VISIBLE);
+                status.removeCallbacks(hideStatus);
+                status.postDelayed(hideStatus, 2400);
+            }
+        });
+        root.addView(adapter, new LinearLayout.LayoutParams(-1, 0, 1f));
+    }
+
+    private void openDisplay(SurfaceTexture texture, ComponentName target, TextView status) {
+        if (!getPackageManager().hasSystemFeature(PackageManager.FEATURE_ACTIVITIES_ON_SECONDARY_DISPLAYS)) {
+            status.setText("This phone does not support opening apps on a secondary display.");
+            return;
         }
-        root.addView(remote, new LinearLayout.LayoutParams(-1, ViewGroup.LayoutParams.WRAP_CONTENT));
+        closeDisplay();
+        texture.setDefaultBufferSize(TV_WIDTH, TV_HEIGHT);
+        displaySurface = new Surface(texture);
+        DisplayManager displays = getSystemService(DisplayManager.class);
+        Intent launch = new Intent(Intent.ACTION_MAIN)
+                .setComponent(target)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_MULTIPLE_TASK);
+        try {
+            display = displays.createVirtualDisplay("TV Emulator", TV_WIDTH, TV_HEIGHT,
+                    TV_DENSITY, displaySurface, DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY);
+            if (display == null) {
+                closeDisplay();
+                status.setText("Android could not create the TV display.");
+                return;
+            }
+            int displayId = display.getDisplay().getDisplayId();
+            if (Build.VERSION.SDK_INT >= 29
+                    && !getSystemService(ActivityManager.class)
+                            .isActivityStartAllowedOnDisplay(this, displayId, launch)) {
+                closeDisplay();
+                status.setText("Android does not allow this app on the TV display.");
+                return;
+            }
+            ActivityOptions options = ActivityOptions.makeBasic().setLaunchDisplayId(displayId);
+            startActivity(launch, options.toBundle());
+            status.setVisibility(View.GONE);
+        } catch (SecurityException | IllegalArgumentException | android.content.ActivityNotFoundException error) {
+            closeDisplay();
+            status.setText("Android could not open this app on the TV display.");
+        }
     }
 
     private TextView text(CharSequence value, int size, int color, boolean bold) {
