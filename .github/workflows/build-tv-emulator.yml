@@ -1,0 +1,74 @@
+name: Apply and build TV Emulator APK
+
+on:
+  push:
+    branches: ['**']
+    paths:
+      - '*.[zZ][iI][pP]'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tv-emulator-pipeline-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    permissions:
+      contents: write
+    uses: ./.github/workflows/apply-tvadapter.yml
+
+  build:
+    needs: apply
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          ref: ${{ needs.apply.outputs.source_sha }}
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: '8.9'
+
+      - name: Ensure Android SDK packages are available
+        shell: bash
+        run: |
+          sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:?Android SDK unavailable}}"
+          missing=()
+          [[ -s "$sdk/platforms/android-35/android.jar" ]] || missing+=('platforms;android-35')
+          [[ -x "$sdk/build-tools/34.0.0/aapt2" ]] || missing+=('build-tools;34.0.0')
+          if (( ${#missing[@]} == 0 )); then
+            exit 0
+          fi
+          sdkmanager_bin="$(command -v sdkmanager || true)"
+          if [[ -z "$sdkmanager_bin" ]]; then
+            for candidate in "$sdk/cmdline-tools/latest/bin/sdkmanager" "$sdk"/cmdline-tools/*/bin/sdkmanager; do
+              if [[ -x "$candidate" ]]; then
+                sdkmanager_bin="$candidate"
+                break
+              fi
+            done
+          fi
+          if [[ -z "$sdkmanager_bin" ]]; then
+            echo '::error::Android SDK packages are missing and sdkmanager could not be found.'
+            exit 1
+          fi
+          "$sdkmanager_bin" --sdk_root="$sdk" --install "${missing[@]}"
+
+      - name: Build TV Emulator debug APK
+        run: gradle :app:assembleDebug --stacktrace
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TV-Emulator-Debug-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error

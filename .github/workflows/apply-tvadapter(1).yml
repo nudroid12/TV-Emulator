@@ -1,0 +1,96 @@
+name: Apply ZIP patches
+
+on:
+  workflow_call:
+    outputs:
+      source_sha:
+        description: Branch commit after applying patches
+        value: ${{ jobs.apply.outputs.source_sha }}
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.ref_type == 'branch'
+    runs-on: ubuntu-latest
+    outputs:
+      source_sha: ${{ steps.result.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.ref }}
+      - name: Apply and commit ZIP files
+        shell: bash
+        run: |
+          python3 - <<'PYTHON'
+          import shutil
+          import stat
+          import subprocess
+          from pathlib import Path, PurePosixPath
+          from zipfile import ZipFile
+
+          def git(*args, **kwargs):
+              return subprocess.run(["git", *args], check=True, **kwargs)
+
+          tracked = git("ls-files", "-z", stdout=subprocess.PIPE).stdout
+          patches = sorted(
+              Path(name.decode("utf-8"))
+              for name in tracked.split(b"\0")
+              if name and b"/" not in name and name.lower().endswith(b".zip")
+          )
+          if not patches:
+              print("No ZIP files in the repository root.")
+              raise SystemExit(0)
+
+          for patch in patches:
+              if patch.is_symlink() or not patch.is_file():
+                  raise SystemExit(f"Invalid ZIP file: {patch}")
+
+              with ZipFile(patch) as archive:
+                  files = {}
+                  for entry in archive.infolist():
+                      if entry.is_dir():
+                          continue
+                      path = PurePosixPath(entry.filename)
+                      parts = tuple(part.casefold() for part in path.parts)
+                      if (
+                          not parts or path.is_absolute() or ".." in parts or
+                          "\\" in entry.filename or path.as_posix() != entry.filename or
+                          ".git" in parts or parts[:2] == (".github", "workflows") or
+                          stat.S_ISLNK(entry.external_attr >> 16)
+                      ):
+                          raise SystemExit(f"{patch}: invalid entry {entry.filename!r}")
+
+                      target = Path(path)
+                      if target in files or target in patches or any(
+                          item.is_symlink() for item in (target, *target.parents)
+                      ):
+                          raise SystemExit(f"{patch}: invalid destination {target}")
+                      files[target] = entry
+
+                  if not files:
+                      raise SystemExit(f"{patch}: no files to apply.")
+
+                  for target, entry in files.items():
+                      target.parent.mkdir(parents=True, exist_ok=True)
+                      with archive.open(entry) as source, target.open("wb") as output:
+                          shutil.copyfileobj(source, output)
+                      if entry.external_attr >> 16 & stat.S_IXUSR:
+                          target.chmod(target.stat().st_mode | stat.S_IXUSR)
+                      git("--literal-pathspecs", "add", "-f", "--", str(target))
+
+              git("--literal-pathspecs", "rm", "--", str(patch))
+              print(f"Applied {patch}")
+          PYTHON
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git -c user.name='github-actions[bot]' \
+              -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              commit -m 'Apply ZIP patches'
+          git push origin "HEAD:$GITHUB_REF"
+      - name: Record source commit
+        id: result
+        shell: bash
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
