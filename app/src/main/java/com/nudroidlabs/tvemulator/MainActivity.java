@@ -1,35 +1,21 @@
 package com.nudroidlabs.tvemulator;
 
 import android.app.Activity;
-import android.app.ActivityManager;
-import android.app.ActivityOptions;
-import android.content.ComponentName;
+import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.graphics.Color;
-import android.graphics.SurfaceTexture;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
-import android.hardware.display.DisplayManager;
-import android.hardware.display.VirtualDisplay;
-import android.os.Build;
 import android.os.Bundle;
-import android.view.KeyEvent;
-import android.view.Surface;
-import android.view.TextureView;
 import android.view.Gravity;
-import android.view.View;
-import android.view.ViewGroup;
-import android.widget.Button;
-import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
-
-import com.nudroidlabs.tvadapter.TvAdapter;
+import android.widget.Toast;
 
 import java.text.Collator;
 import java.util.ArrayList;
@@ -41,64 +27,14 @@ public final class MainActivity extends Activity {
     private static final int BACKGROUND = 0xff101624;
     private static final int SURFACE = 0xff1a253a;
     private static final int MUTED = 0xffa9b7ce;
-    private static final int TV_WIDTH = 960;
-    private static final int TV_HEIGHT = 540;
-    private static final int TV_DENSITY = 160;
-
-    private ComponentName selection;
-    private VirtualDisplay display;
-    private Surface displaySurface;
-
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
-        if (state != null) {
-            selection = ComponentName.unflattenFromString(state.getString("selection", ""));
-        }
-        render();
-    }
-
-    @Override protected void onSaveInstanceState(Bundle state) {
-        super.onSaveInstanceState(state);
-        if (selection != null) state.putString("selection", selection.flattenToString());
-    }
-
-    @Override public void onBackPressed() {
-        if (selection == null) {
-            super.onBackPressed();
-            return;
-        }
-        closeDisplay();
-        selection = null;
-        render();
-    }
-
-    @Override protected void onDestroy() {
-        closeDisplay();
-        super.onDestroy();
-    }
-
-    private void closeDisplay() {
-        if (display != null) {
-            display.release();
-            display = null;
-        }
-        if (displaySurface != null) {
-            displaySurface.release();
-            displaySurface = null;
-        }
-    }
-
-    private void render() {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(18), dp(14), dp(18), dp(14));
         root.setBackgroundColor(BACKGROUND);
         setContentView(root);
-        if (selection != null) {
-            showSession(root);
-        } else {
-            showLibrary(root);
-        }
+        showLibrary(root);
     }
 
     private void showLibrary(LinearLayout root) {
@@ -136,10 +72,7 @@ public final class MainActivity extends Activity {
             labels.addView(text(label, 16, Color.WHITE, true));
             labels.addView(text(activity.packageName, 12, MUTED, false));
             row.addView(labels, new LinearLayout.LayoutParams(0, -2, 1f));
-            row.setOnClickListener(view -> {
-                selection = new ComponentName(activity.packageName, activity.name);
-                render();
-            });
+            row.setOnClickListener(view -> launchApp(activity.packageName, label));
             LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
             params.bottomMargin = dp(6);
             list.addView(row, params);
@@ -172,100 +105,21 @@ public final class MainActivity extends Activity {
         return apps;
     }
 
-    private void showSession(LinearLayout root) {
-        Button back = new Button(this);
-        back.setText("Installed apps");
-        back.setAllCaps(false);
-        back.setOnClickListener(v -> onBackPressed());
-        root.addView(back, new LinearLayout.LayoutParams(-2, -2));
-
+    private void launchApp(String packageName, CharSequence label) {
         PackageManager packages = getPackageManager();
-        try {
-            ActivityInfo info = packages.getActivityInfo(selection, 0);
-            root.addView(text(info.loadLabel(packages), 22, Color.WHITE, true));
-        } catch (PackageManager.NameNotFoundException e) {
-            selection = null;
-            root.removeAllViews();
-            showLibrary(root);
-            return;
+        Intent launch = packages.getLaunchIntentForPackage(packageName);
+        if (launch == null) {
+            launch = packages.getLeanbackLaunchIntentForPackage(packageName);
         }
-
-        FrameLayout screen = new FrameLayout(this);
-        screen.setBackgroundColor(0xff090d15);
-        TextureView texture = new TextureView(this);
-        screen.addView(texture, new FrameLayout.LayoutParams(-1, -1));
-        TextView status = text("Opening app on the TV display…", 24, MUTED, false);
-        status.setGravity(Gravity.CENTER);
-        status.setPadding(24, 12, 24, 12);
-        screen.addView(status, new FrameLayout.LayoutParams(-1, -1));
-
-        ComponentName target = selection;
-        texture.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
-            @Override public void onSurfaceTextureAvailable(SurfaceTexture surface, int width, int height) {
-                if (target.equals(selection)) openDisplay(surface, target, status);
-            }
-
-            @Override public void onSurfaceTextureSizeChanged(SurfaceTexture surface, int width, int height) {}
-
-            @Override public boolean onSurfaceTextureDestroyed(SurfaceTexture surface) {
-                closeDisplay();
-                return true;
-            }
-
-            @Override public void onSurfaceTextureUpdated(SurfaceTexture surface) {}
-        });
-
-        Runnable hideStatus = () -> status.setVisibility(View.GONE);
-        TvAdapter adapter = new TvAdapter(this, screen, TV_WIDTH, TV_HEIGHT, keyCode -> {
-            if (keyCode == KeyEvent.KEYCODE_BACK) {
-                onBackPressed();
+        if (launch != null) {
+            try {
+                startActivity(launch);
                 return;
+            } catch (ActivityNotFoundException | SecurityException ignored) {
+                // The entry may have been removed or restricted since the list was loaded.
             }
-            if (display != null) {
-                status.setText("Remote input to another app is unavailable in this build.");
-                status.setVisibility(View.VISIBLE);
-                status.removeCallbacks(hideStatus);
-                status.postDelayed(hideStatus, 2400);
-            }
-        });
-        root.addView(adapter, new LinearLayout.LayoutParams(-1, 0, 1f));
-    }
-
-    private void openDisplay(SurfaceTexture texture, ComponentName target, TextView status) {
-        if (!getPackageManager().hasSystemFeature(PackageManager.FEATURE_ACTIVITIES_ON_SECONDARY_DISPLAYS)) {
-            status.setText("This phone does not support opening apps on a secondary display.");
-            return;
         }
-        closeDisplay();
-        texture.setDefaultBufferSize(TV_WIDTH, TV_HEIGHT);
-        displaySurface = new Surface(texture);
-        DisplayManager displays = getSystemService(DisplayManager.class);
-        Intent launch = new Intent(Intent.ACTION_MAIN)
-                .setComponent(target)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_MULTIPLE_TASK);
-        try {
-            display = displays.createVirtualDisplay("TV Emulator", TV_WIDTH, TV_HEIGHT,
-                    TV_DENSITY, displaySurface, DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY);
-            if (display == null) {
-                closeDisplay();
-                status.setText("Android could not create the TV display.");
-                return;
-            }
-            int displayId = display.getDisplay().getDisplayId();
-            if (Build.VERSION.SDK_INT >= 29
-                    && !getSystemService(ActivityManager.class)
-                            .isActivityStartAllowedOnDisplay(this, displayId, launch)) {
-                closeDisplay();
-                status.setText("Android does not allow this app on the TV display.");
-                return;
-            }
-            ActivityOptions options = ActivityOptions.makeBasic().setLaunchDisplayId(displayId);
-            startActivity(launch, options.toBundle());
-            status.setVisibility(View.GONE);
-        } catch (SecurityException | IllegalArgumentException | android.content.ActivityNotFoundException error) {
-            closeDisplay();
-            status.setText("Android could not open this app on the TV display.");
-        }
+        Toast.makeText(this, "Couldn’t open " + label + ".", Toast.LENGTH_SHORT).show();
     }
 
     private TextView text(CharSequence value, int size, int color, boolean bold) {
